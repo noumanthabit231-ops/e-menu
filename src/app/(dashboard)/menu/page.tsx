@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
   Plus, 
@@ -10,7 +10,10 @@ import {
   AlertCircle,
   Image as ImageIcon,
   CheckCircle2,
-  X
+  X,
+  Upload,
+  Info,
+  ExternalLink
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -43,6 +46,11 @@ export default function MenuPage() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  
+  // Upload state
+  const [uploading, setUploading] = useState(false);
+  const [showUrlHint, setShowUrlHint] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchData();
@@ -54,7 +62,6 @@ export default function MenuPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // 1. Get restaurant
       const { data: restaurantData, error: resError } = await supabase
         .from('restaurants')
         .select('*')
@@ -68,7 +75,6 @@ export default function MenuPage() {
       }
       setRestaurant(restaurantData);
 
-      // 2. Get categories and items
       const { data: categoriesData, error: catError } = await supabase
         .from('categories')
         .select('*, menu_items(*)')
@@ -77,7 +83,6 @@ export default function MenuPage() {
 
       if (catError) throw catError;
       
-      // Sort items within categories as well
       const sortedCategories = (categoriesData || []).map(cat => ({
         ...cat,
         menu_items: cat.menu_items?.sort((a: any, b: any) => 
@@ -90,6 +95,33 @@ export default function MenuPage() {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      setUploading(true);
+      if (!e.target.files || e.target.files.length === 0) return;
+      const file = e.target.files[0];
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}.${fileExt}`;
+      const filePath = `menu/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('menu-images')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('menu-images')
+        .getPublicUrl(filePath);
+
+      setEditingItem(prev => ({ ...prev!, image_url: publicUrl }));
+    } catch (error: any) {
+      alert('Ошибка при загрузке: ' + error.message);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -119,7 +151,6 @@ export default function MenuPage() {
 
   const handleDeleteCategory = async (id: string) => {
     if (!confirm('Вы уверены, что хотите удалить эту категорию и все ее блюда?')) return;
-    
     try {
       const { error } = await supabase.from('categories').delete().eq('id', id);
       if (error) throw error;
@@ -196,12 +227,12 @@ export default function MenuPage() {
         <p className="text-slate-600 mb-8 text-lg">
           Чтобы создать меню, сначала укажите название и WhatsApp вашего заведения в настройках.
         </p>
-<Link 
-  to="/settings"
-  className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-indigo-100"
->
-  Перейти в настройки
-</Link>
+        <Link 
+          to="/settings"
+          className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-lg shadow-indigo-100"
+        >
+          Перейти в настройки
+        </Link>
       </div>
     );
   }
@@ -342,7 +373,7 @@ export default function MenuPage() {
               </button>
             </div>
             
-            <form onSubmit={handleSaveItem} className="p-8 space-y-5">
+            <form onSubmit={handleSaveItem} className="p-8 space-y-5 overflow-y-auto max-h-[80vh]">
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700 ml-1">Название блюда *</label>
                 <input
@@ -385,26 +416,98 @@ export default function MenuPage() {
                 <textarea
                   value={editingItem?.description || ''}
                   onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })}
-                  className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-500 transition-all font-medium min-h-[100px]"
+                  className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-500 transition-all font-medium min-h-[80px]"
                   placeholder="Состав, вес, особенности..."
                 />
               </div>
 
-              <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-700 ml-1">URL изображения</label>
-                <div className="relative">
-                  <ImageIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input
-                    type="text"
-                    value={editingItem?.image_url || ''}
-                    onChange={(e) => setEditingItem({ ...editingItem, image_url: e.target.value })}
-                    className="w-full pl-12 pr-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-500 transition-all font-medium"
-                    placeholder="https://images.unsplash.com/..."
-                  />
+              {/* Image Upload / URL Section */}
+              <div className="space-y-4 pt-2 border-t border-slate-100">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-bold text-slate-700 ml-1">Фото блюда</label>
+                    <div className="relative group">
+                      <button 
+                        type="button" 
+                        onMouseEnter={() => setShowUrlHint(true)}
+                        onMouseLeave={() => setShowUrlHint(false)}
+                        className="text-slate-400 hover:text-indigo-600 transition-colors"
+                      >
+                        <Info className="w-4 h-4" />
+                      </button>
+                      {showUrlHint && (
+                        <div className="absolute right-0 bottom-6 w-64 p-4 bg-slate-900 text-white text-[11px] rounded-2xl shadow-xl z-50 animate-in fade-in slide-in-from-bottom-2">
+                          <p className="font-bold mb-2 flex items-center gap-1"><ExternalLink className="w-3 h-3" /> Как вставить ссылку:</p>
+                          <ol className="list-decimal list-inside space-y-1 opacity-90">
+                            <li>Найдите фото в Google</li>
+                            <li>Правой кнопкой мыши</li>
+                            <li>«Копировать адрес изображения»</li>
+                            <li>Вставьте ссылку в поле ниже</li>
+                          </ol>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Preview */}
+                  {editingItem?.image_url && (
+                    <div className="relative w-24 h-24 rounded-2xl overflow-hidden border border-slate-200 mb-3 group/preview">
+                      <img src={editingItem.image_url} className="w-full h-full object-cover" />
+                      <button 
+                        type="button"
+                        onClick={() => setEditingItem({...editingItem, image_url: ''})}
+                        className="absolute inset-0 bg-red-500/80 text-white opacity-0 group-hover/preview:opacity-100 flex items-center justify-center transition-opacity"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-4">
+                    <button
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full flex items-center justify-center gap-2 px-5 py-4 bg-white border-2 border-dashed border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-2xl transition-all font-bold group"
+                    >
+                      {uploading ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <>
+                          <Upload className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
+                          <span>Загрузить с ПК</span>
+                        </>
+                      )}
+                    </button>
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      className="hidden" 
+                      accept="image/*" 
+                      onChange={handleFileUpload}
+                    />
+
+                    <div className="flex items-center gap-4 px-2">
+                      <div className="flex-1 h-px bg-slate-100"></div>
+                      <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">ИЛИ ССЫЛКА</span>
+                      <div className="flex-1 h-px bg-slate-100"></div>
+                    </div>
+
+                    <div className="relative">
+                      <ImageIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                      <input
+                        type="text"
+                        value={editingItem?.image_url || ''}
+                        onChange={(e) => setEditingItem({ ...editingItem, image_url: e.target.value })}
+                        className="w-full pl-12 pr-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-indigo-50 focus:border-indigo-500 transition-all font-medium text-sm"
+                        placeholder="https://..."
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-4 flex gap-3">
+              <div className="pt-6 flex gap-3">
                 <button
                   type="button"
                   onClick={() => setIsItemModalOpen(false)}
@@ -414,10 +517,15 @@ export default function MenuPage() {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-6 py-4 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+                  disabled={uploading}
+                  className="flex-1 px-6 py-4 bg-indigo-600 disabled:opacity-50 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
                 >
-                  <CheckCircle2 className="w-5 h-5" />
-                  Сохранить
+                  {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : (
+                    <>
+                      <CheckCircle2 className="w-5 h-5" />
+                      Сохранить
+                    </>
+                  )}
                 </button>
               </div>
             </form>
